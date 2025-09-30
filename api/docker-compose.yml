@@ -4,57 +4,88 @@ services:
     image: postgres:15-alpine
     container_name: tintas_ai_postgres
     environment:
-      POSTGRES_DB: ${DATABASE_NAME:-tintas_ai_db}
-      POSTGRES_USER: ${DATABASE_USER:-user}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-password}
+      POSTGRES_DB: ${DATABASE_NAME}
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
     ports:
-      - "${DATABASE_PORT:-5432}:5432"
+      - "${DATABASE_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-user} -d ${DATABASE_NAME:-tintas_ai_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     restart: unless-stopped
     networks:
       - app-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # FastAPI application
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
     container_name: tintas_ai_api
     ports:
-      - "${PORT:-8000}:8000"
+      - "${API_PORT}:8000"
     environment:
-      - DATABASE_URL=postgresql://${DATABASE_USER:-user}:${DATABASE_PASSWORD:-password}@postgres:5432/${DATABASE_NAME:-tintas_ai_db}
       - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432
-      - DATABASE_NAME=${DATABASE_NAME:-tintas_ai_db}
-      - DATABASE_USER=${DATABASE_USER:-user}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-password}
-      - DEBUG=${DEBUG:-False}
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - RELOAD=${RELOAD:-False}
-      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here-change-in-production}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_NAME=${DATABASE_NAME}
+      - DATABASE_USER=${DATABASE_USER}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_URL=postgresql://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres:${DATABASE_PORT}/${DATABASE_NAME}
       - HOST=0.0.0.0
       - PORT=8000
+      - API_PORT=${API_PORT}
+      - APP_NAME=${APP_NAME}
+      - APP_VERSION=${APP_VERSION}
+      - APP_DESCRIPTION=${APP_DESCRIPTION}
+      - DEBUG=${DEBUG}
+      - ENVIRONMENT=${ENVIRONMENT}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES}
+      - ALGORITHM=${ALGORITHM}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - CORS_METHODS=${CORS_METHODS}
+      - CORS_HEADERS=${CORS_HEADERS}
     volumes:
-      - ./logs:/app/logs
+      - ./logs:/app/logs:rw
+      - ./alembic:/app/alembic:ro
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && python main.py"]
+    command: ["python", "run.py"]
     restart: unless-stopped
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
 
 volumes:
   postgres_data:

@@ -9,7 +9,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import Base and settings
 from app.infrastructure.database import Base, metadata
-from app.core.config import settings
+from app.core.settings import settings
+# Import models to ensure they are registered with Base
+from app.infrastructure.models import UserModel
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,7 +33,7 @@ target_metadata = Base.metadata
 
 def get_url():
     """Get database URL from settings."""
-    return settings.database_url
+    return settings.database.url
 
 
 def run_migrations_offline() -> None:

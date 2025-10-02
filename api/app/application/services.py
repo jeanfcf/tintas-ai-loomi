@@ -2,14 +2,21 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
 
-from app.domain.entities import User, UserCreate, UserUpdate, LoginRequest, Token, TokenData, UserRole, UserFilters, PaginationParams, PaginatedResponse
-from app.domain.services import UserServiceInterface, AuthServiceInterface, AuthApplicationServiceInterface
-from app.domain.repositories import UserRepositoryInterface
+from app.domain.entities import (
+    User, UserCreate, UserUpdate, LoginRequest, Token, TokenData, UserRole, UserFilters, PaginationParams, PaginatedResponse,
+    Paint, PaintCreate, PaintUpdate, PaintFilters, PaginatedPaintResponse,
+    CSVImportRequest, CSVImportResponse, CSVImportResult, CSVRowError, PaintResponse
+)
+from app.domain.services import UserServiceInterface, AuthServiceInterface, AuthApplicationServiceInterface, PaintServiceInterface, CSVImportServiceInterface, AIOrchestratorServiceInterface
+from app.domain.repositories import UserRepositoryInterface, PaintRepositoryInterface
 from app.core.logging import get_logger
 from app.core.settings import settings
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+import base64
+import csv
+import io
 
 logger = get_logger(__name__)
 
@@ -219,3 +226,254 @@ class AuthApplicationService(AuthApplicationServiceInterface):
     def verify_token(self, token: str):
         """Verify token and return token data."""
         return self.auth_service.verify_token(token)
+
+
+class PaintService(PaintServiceInterface):
+    """Paint service implementation."""
+
+    def __init__(self, paint_repo: PaintRepositoryInterface):
+        self.paint_repo = paint_repo
+
+    def create_paint(self, db: Session, paint_data: PaintCreate) -> Paint:
+        """Create a new paint."""
+        try:
+            from app.domain.validators import PaintValidator
+            PaintValidator.validate_paint_data(paint_data)
+
+            if self.paint_repo.exists_active_by_name(db, paint_data.name):
+                raise ValueError("Paint with this name already exists")
+
+            paint = self.paint_repo.create(db, paint_data)
+            
+            return paint
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            error_msg = f"Unexpected error creating paint: {e}"
+            logger.error(f"{error_msg} - name: {paint_data.name}, color: {paint_data.color}")
+            raise Exception(error_msg)
+
+    def get_paint(self, db: Session, paint_id: int) -> Optional[Paint]:
+        """Get paint by ID."""
+        return self.paint_repo.get_by_id(db, paint_id)
+
+    def get_paint_by_name(self, db: Session, name: str) -> Optional[Paint]:
+        """Get paint by name."""
+        return self.paint_repo.get_by_name(db, name)
+
+    def get_paints(self, db: Session, pagination: PaginationParams, filters: PaintFilters) -> PaginatedPaintResponse:
+        """Get all paints with pagination and filters."""
+        paints = self.paint_repo.get_all(db, pagination, filters)
+        total = self.paint_repo.count_all(db, filters)
+        
+        return PaginatedPaintResponse(
+            items=paints,
+            total=total,
+            skip=pagination.skip,
+            limit=pagination.limit,
+            has_next=pagination.skip + pagination.limit < total,
+            has_prev=pagination.skip > 0
+        )
+
+    def update_paint(self, db: Session, paint_id: int, paint_data: PaintUpdate) -> Optional[Paint]:
+        """Update paint."""
+        try:
+            from app.domain.validators import PaintValidator
+            PaintValidator.validate_paint_update(paint_data)
+            
+            # Check if name is being updated and if it already exists
+            if paint_data.name and paint_data.name != self.paint_repo.get_by_id(db, paint_id).name:
+                if self.paint_repo.exists_active_by_name(db, paint_data.name):
+                    raise ValueError("Paint with this name already exists")
+            
+            return self.paint_repo.update(db, paint_id, paint_data)
+                
+        except ValueError:
+            raise
+        except Exception as e:
+            error_msg = f"Unexpected error updating paint: {e}"
+            logger.error(f"{error_msg} - paint_id: {paint_id}")
+            raise Exception(error_msg)
+
+    def delete_paint(self, db: Session, paint_id: int) -> bool:
+        """Soft delete paint."""
+        return self.paint_repo.delete(db, paint_id)
+
+    def get_paints_by_filters(self, db: Session, filters: PaintFilters) -> List[Paint]:
+        """Get paints by specific filters without pagination."""
+        return self.paint_repo.get_by_filters(db, filters)
+
+
+class CSVImportService(CSVImportServiceInterface):
+    """CSV import service implementation."""
+
+    def __init__(self, paint_service: PaintServiceInterface):
+        self.paint_service = paint_service
+
+    async def import_paints_from_csv(self, db: Session, import_request: CSVImportRequest) -> CSVImportResponse:
+        """Import paints from CSV file."""
+        try:
+            # Decode base64 content
+            csv_content = self._decode_csv_content(import_request.file_content)
+            
+            # Validate CSV structure
+            self.validate_csv_file(csv_content)
+            
+            # Parse CSV content
+            csv_rows = self.parse_csv_content(csv_content)
+            
+            # Process each row
+            result = await self._process_csv_rows(db, csv_rows, import_request)
+            
+            return CSVImportResponse(
+                success=True,
+                message=f"Successfully imported {result.successful_imports} out of {result.total_rows} paints",
+                result=result
+            )
+            
+        except ValueError as e:
+            logger.error(f"CSV validation error: {e}")
+            return CSVImportResponse(
+                success=False,
+                message=f"CSV validation failed: {str(e)}",
+                errors=[]
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error during CSV import: {e}")
+            return CSVImportResponse(
+                success=False,
+                message=f"Unexpected error during import: {str(e)}",
+                errors=[]
+            )
+
+    def validate_csv_file(self, csv_content: str) -> bool:
+        """Validate CSV file structure and format."""
+        from app.domain.validators import CSVValidator
+        CSVValidator.validate_csv_structure(csv_content)
+        return True
+
+    def parse_csv_content(self, csv_content: str) -> List[dict]:
+        """Parse CSV content into list of dictionaries."""
+        try:
+            csv_reader = csv.DictReader(io.StringIO(csv_content))
+            return list(csv_reader)
+        except Exception as e:
+            raise ValueError(f"Error parsing CSV content: {str(e)}")
+
+    def _decode_csv_content(self, base64_content: str) -> str:
+        """Decode base64 encoded CSV content."""
+        try:
+            decoded_bytes = base64.b64decode(base64_content)
+            return decoded_bytes.decode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Error decoding CSV content: {str(e)}")
+
+    async def _process_csv_rows(self, db: Session, csv_rows: List[dict], import_request: CSVImportRequest) -> CSVImportResult:
+        """Process CSV rows and import paints."""
+        from app.domain.validators import CSVValidator
+        from app.domain.entities import SurfaceType, Environment, FinishType, PaintLine, PaintCreate
+        
+        result = CSVImportResult(
+            total_rows=len(csv_rows),
+            successful_imports=0,
+            failed_imports=0,
+            errors=[],
+            imported_paints=[]
+        )
+        
+        for i, row in enumerate(csv_rows, start=2):  # Start at 2 because header is row 1
+            try:
+                # Validate row data
+                CSVValidator.validate_csv_row(row, i)
+                CSVValidator.validate_enum_values(row, i)
+                
+                # Parse features
+                features = []
+                if row.get('features') and row['features'].strip():
+                    features = [f.strip() for f in row['features'].split(',') if f.strip()]
+                
+                # Parse surface types
+                surface_types = []
+                if row.get('tipo_parede') and row['tipo_parede'].strip():
+                    surface_types = [SurfaceType(s.strip().lower()) for s in row['tipo_parede'].split(',') if s.strip()]
+                
+                # Create paint data
+                paint_data = PaintCreate(
+                    name=row['nome'].strip(),
+                    color=row['cor'].strip(),
+                    surface_types=surface_types,
+                    environment=Environment(row['ambiente'].strip().lower()),
+                    finish_type=FinishType(row['acabamento'].strip().lower()),
+                    features=features,
+                    line=PaintLine(row['linha'].strip().lower())
+                )
+                
+                # Check if paint already exists
+                existing_paint = self.paint_service.get_paint_by_name(db, paint_data.name)
+                
+                if existing_paint:
+                    if import_request.skip_duplicates:
+                        result.errors.append(f"Row {i}: Paint '{paint_data.name}' already exists, skipping")
+                        result.failed_imports += 1
+                        continue
+                    elif import_request.update_existing:
+                        # Update existing paint
+                        from app.domain.entities import PaintUpdate
+                        update_data = PaintUpdate(
+                            color=paint_data.color,
+                            surface_types=paint_data.surface_types,
+                            environment=paint_data.environment,
+                            finish_type=paint_data.finish_type,
+                            features=paint_data.features,
+                            line=paint_data.line
+                        )
+                        updated_paint = self.paint_service.update_paint(db, existing_paint.id, update_data)
+                        if updated_paint:
+                            # Regenerate and store embedding for the updated paint
+                            try:
+                                from app.core.container import container
+                                embedding_service = container.get_embedding_service()
+                                import asyncio
+                                asyncio.run(embedding_service.generate_and_store_embedding(db, updated_paint.id))
+                                logger.info(f"Regenerated embedding for updated paint: {updated_paint.name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to regenerate embedding for paint {updated_paint.name}: {e}")
+                                # Continue with import even if embedding generation fails
+                            
+                            result.imported_paints.append(PaintResponse.model_validate(updated_paint))
+                            result.successful_imports += 1
+                        else:
+                            result.errors.append(f"Row {i}: Failed to update paint '{paint_data.name}'")
+                            result.failed_imports += 1
+                        continue
+                    else:
+                        result.errors.append(f"Row {i}: Paint '{paint_data.name}' already exists")
+                        result.failed_imports += 1
+                        continue
+                
+                # Create new paint
+                created_paint = self.paint_service.create_paint(db, paint_data)
+                
+                # Generate and store embedding for the new paint
+                try:
+                    from app.core.container import container
+                    embedding_service = container.get_embedding_service()
+                    await embedding_service.generate_and_store_embedding(db, created_paint.id)
+                    logger.info(f"Generated embedding for imported paint: {created_paint.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate embedding for paint {created_paint.name}: {e}")
+                    # Continue with import even if embedding generation fails
+                
+                result.imported_paints.append(PaintResponse.model_validate(created_paint))
+                result.successful_imports += 1
+                
+            except ValueError as e:
+                result.errors.append(f"Row {i}: {str(e)}")
+                result.failed_imports += 1
+            except Exception as e:
+                result.errors.append(f"Row {i}: Unexpected error - {str(e)}")
+                result.failed_imports += 1
+                logger.error(f"Error processing CSV row {i}: {e}")
+        
+        return result

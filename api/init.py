@@ -9,8 +9,44 @@ from app.infrastructure.database import SessionLocal, check_database_connection
 from app.core.container import container
 from app.domain.entities import UserCreate, UserRole
 from app.core.logging import get_logger
+from app.infrastructure.models import PaintModel
+import asyncio
 
 logger = get_logger(__name__)
+
+
+async def generate_missing_embeddings():
+    """Generate embeddings for paints that don't have them."""
+    try:
+        db = SessionLocal()
+        embedding_service = container.get_embedding_service()
+        
+        # Get paints without embeddings
+        paints_without_embeddings = db.query(PaintModel).filter(
+            PaintModel.embedding.is_(None)
+        ).all()
+        
+        if not paints_without_embeddings:
+            logger.info("All paints have embeddings")
+            return
+        
+        logger.info(f"Generating embeddings for {len(paints_without_embeddings)} paints")
+        
+        success_count = 0
+        for paint in paints_without_embeddings:
+            try:
+                await embedding_service.generate_and_store_embedding(db, paint.id)
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to generate embedding for paint {paint.id}: {e}")
+        
+        logger.info(f"Embedding generation completed: {success_count}/{len(paints_without_embeddings)} successful")
+        
+    except Exception as e:
+        logger.error(f"Error in generate_missing_embeddings: {str(e)}")
+    finally:
+        if 'db' in locals():
+            db.close()
 
 
 def check_migration_status():
@@ -135,34 +171,24 @@ def initialize_system():
     try:
         from app.core.settings import settings
         
-        logger.info("=== DATABASE CONFIGURATION ===")
-        logger.info(f"DATABASE_URL: {settings.database.url}")
-        logger.info(f"DATABASE_HOST: {settings.database.db_host}")
-        logger.info(f"DATABASE_PORT: {settings.database.db_port}")
-        logger.info(f"DATABASE_NAME: {settings.database.db_name}")
-        logger.info(f"DATABASE_USER: {settings.database.db_user}")
-        logger.info(f"Environment: {settings.app.environment}")
-        logger.info("===============================")
+        logger.info(f"Initializing system - Environment: {settings.app.environment}")
         if not check_database_connection():
-            error_msg = "Database connection failed. Please start the database first:\nRun: docker compose up -d postgres"
-            logger.error(error_msg)
+            logger.error("Database connection failed")
             return False
         
         if not run_migrations():
-            error_msg = "Failed to run migrations. Check logs for details."
-            logger.error(error_msg)
+            logger.error("Migration failed")
             return False
+            
         if not create_admin_user():
-            error_msg = "Failed to create admin user. Check logs for details."
-            logger.error(error_msg)
+            logger.error("Admin user creation failed")
             return False
         
-        logger.info("System initialized")
+        logger.info("System initialized successfully")
         return True
         
     except Exception as e:
-        error_msg = f"Critical error during system initialization: {e}"
-        logger.error(error_msg)
+        logger.error(f"System initialization failed: {e}")
         return False
 
 

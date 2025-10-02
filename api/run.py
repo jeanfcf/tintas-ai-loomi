@@ -24,9 +24,7 @@ logger = get_logger(__name__)
 
 if __name__ == "__main__":
     try:
-        logger.info(f"Starting API server on {settings.app.host}:{settings.app.port}")
-        
-        log_config = None
+        logger.info(f"Starting server on {settings.app.host}:{settings.app.port}")
         
         uvicorn.run(
             "main:app",
@@ -34,14 +32,12 @@ if __name__ == "__main__":
             port=settings.app.port,
             log_level=log_level.lower(),
             reload=settings.is_development,
-            access_log=True,
-            log_config=log_config
+            access_log=True
         )
         
     except KeyboardInterrupt:
-        logger.info("API stopped")
+        logger.info("Server stopped")
         sys.exit(0)
     except Exception as e:
-        error_msg = f"Failed to start API: {e}"
-        logger.error(error_msg)
+        logger.error(f"Server start failed: {e}")
         sys.exit(1)

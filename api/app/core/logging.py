@@ -61,7 +61,7 @@ def setup_logging(
     logging.getLogger("fastapi").setLevel(logging.WARNING)
     
     logger = logging.getLogger(__name__)
-    logger.info("Logging initialized")
+    logger.info("Logging system ready")
 
 
 def get_logger(name: str) -> logging.Logger:

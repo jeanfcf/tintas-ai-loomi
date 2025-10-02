@@ -1,0 +1,182 @@
+services:
+  # PostgreSQL Database (Compartilhado)
+  postgres:
+    image: postgres:15-alpine
+    container_name: tintas_ai_postgres
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-tintas_ai_db}
+      POSTGRES_USER: ${DATABASE_USER:-tintas_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-tintas_secure_password_2024}
+    ports:
+      - "${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-tintas_user} -d ${DATABASE_NAME:-tintas_ai_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - app-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis removido para simplificar o sistema
+
+  # Backend API
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: production
+    container_name: tintas_ai_api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=${DATABASE_PORT:-5432}
+      - DATABASE_NAME=${DATABASE_NAME:-tintas_ai_db}
+      - DATABASE_USER=${DATABASE_USER:-tintas_user}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-tintas_secure_password_2024}
+      - DATABASE_URL=postgresql://${DATABASE_USER:-tintas_user}:${DATABASE_PASSWORD:-tintas_secure_password_2024}@postgres:${DATABASE_PORT:-5432}/${DATABASE_NAME:-tintas_ai_db}
+      # - REDIS_URL=redis://redis:${REDIS_PORT:-6379}  # Redis removido
+      - AI_ORCHESTRATOR_URL=http://ai-orchestrator:8001
+      - HOST=0.0.0.0
+      - PORT=8000
+      - API_PORT=${API_PORT:-8000}
+      - APP_NAME=${APP_NAME:-Tintas AI Loomi}
+      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - APP_DESCRIPTION=${APP_DESCRIPTION:-Sistema de Recomendação Inteligente de Tintas}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      - ALGORITHM=${ALGORITHM:-HS256}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8001}
+      - CORS_METHODS=${CORS_METHODS:-GET,POST,PUT,DELETE,OPTIONS}
+      - CORS_HEADERS=${CORS_HEADERS:-*}
+      - AI_JWT_SECRET_KEY=${AI_JWT_SECRET_KEY:-ai_orchestrator_secret_key_2024}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}  # Modelo mais barato
+      - OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE:-0.1}
+    volumes:
+      - ./api/logs:/app/logs:rw
+      - ./api/alembic:/app/alembic:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # redis:  # Redis removido
+      #   condition: service_healthy
+    command: ["python", "run.py"]
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  # AI Orchestrator Service
+  ai-orchestrator:
+    build:
+      context: ./ai-orchestrator
+      dockerfile: Dockerfile
+    container_name: tintas_ai_orchestrator
+    ports:
+      - "${AI_ORCHESTRATOR_PORT:-8001}:8001"
+    environment:
+      - DATABASE_URL=postgresql://${DATABASE_USER:-tintas_user}:${DATABASE_PASSWORD:-tintas_secure_password_2024}@postgres:${DATABASE_PORT:-5432}/${DATABASE_NAME:-tintas_ai_db}
+      # - REDIS_URL=redis://redis:${REDIS_PORT:-6379}  # Redis removido
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}  # Modelo mais barato
+      - OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE:-0.1}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_BASE_URL=http://api:8000
+      - AI_ORCHESTRATOR_BASE_URL=http://localhost:8001
+      - JWT_SECRET_KEY=${AI_JWT_SECRET_KEY:-ai_orchestrator_secret_key_2024}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # redis:  # Redis removido
+      #   condition: service_healthy
+    volumes:
+      - ./ai-orchestrator/logs:/app/logs
+      - ./ai-orchestrator/generated_images:/app/generated_images
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tintas_ai_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - app-network
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

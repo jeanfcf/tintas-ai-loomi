@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 from typing import Generator
 from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
 
 from app.core.settings import settings
 from app.core.logging import get_logger
@@ -13,8 +14,10 @@ logger = get_logger(__name__)
 
 engine = create_engine(
     settings.database.url,
-    poolclass=StaticPool,
     pool_pre_ping=True,
+    pool_recycle=3600,
+    pool_size=10,
+    max_overflow=20,
     echo=settings.is_development,
     future=True
 )
@@ -29,14 +32,21 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
-    except HTTPException as e:
+    except (HTTPException, RequestValidationError):
+        # Re-raise HTTPExceptions and RequestValidationErrors without logging as database errors
         raise
     except Exception as e:
         logger.error(f"Database session error: {e}", exc_info=True)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"Error during rollback: {rollback_error}")
         raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception as close_error:
+            logger.error(f"Error closing database session: {close_error}")
 
 
 def create_tables() -> None:

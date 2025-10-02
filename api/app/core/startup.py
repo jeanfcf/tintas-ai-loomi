@@ -1,6 +1,5 @@
 """Application startup and shutdown management."""
 from contextlib import asynccontextmanager
-from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -21,30 +20,31 @@ class ApplicationStartup:
     async def startup(self) -> None:
         """Initialize application on startup."""
         try:
-            logger.info(f"Starting app v{self.settings.app.version}")
+            logger.info(f"Starting application v{self.settings.app.version}")
             
             if self.settings.is_production:
-                logger.warning("Production mode - docs visible at /docs")
+                logger.warning("Running in production mode")
             
             if not initialize_system():
-                error_msg = "System initialization failed. Check logs for details."
-                logger.error(error_msg)
-                raise Exception(error_msg)
+                logger.error("System initialization failed")
+                raise Exception("System initialization failed")
             
-            logger.info("App started successfully")
+            logger.info("Generating paint embeddings...")
+            from init import generate_missing_embeddings
+            await generate_missing_embeddings()
+            
+            logger.info("Application started successfully")
             
         except Exception as e:
-            error_msg = f"Critical error during app startup: {e}"
-            logger.error(error_msg)
+            logger.error(f"Startup failed: {e}")
             raise
     
     async def shutdown(self) -> None:
         """Cleanup on application shutdown."""
         try:
-            logger.info("App shutdown initiated")
-            logger.info("App stopped")
+            logger.info("Application shutdown")
         except Exception as e:
-            logger.error(f"Error during app shutdown: {e}")
+            logger.error(f"Shutdown error: {e}")
 
 
 def create_lifespan() -> asynccontextmanager:
@@ -65,14 +65,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
     
     @app.exception_handler(SQLAlchemyError)
     async def database_exception_handler(request, exc):
-        request_id = getattr(request.state, "request_id", None)
-        logger.error(f"DB error - error: {str(exc)}, request_id: {request_id}")
+        logger.error(f"Database error: {exc}")
         return HTTPException(status_code=500, detail="Database error occurred")
     
     @app.exception_handler(Exception)
     async def general_exception_handler(request, exc):
-        request_id = getattr(request.state, "request_id", None)
-        logger.error(f"Unhandled error - error: {str(exc)}, request_id: {request_id}")
+        logger.error(f"Unhandled error: {exc}")
         return HTTPException(status_code=500, detail="Internal server error")
 
 

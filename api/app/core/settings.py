@@ -47,6 +47,7 @@ class SecuritySettings(BaseSettings):
     secret_key: str = Field(default="change-this-secret-key-in-production", env="SECRET_KEY")
     algorithm: str = Field(default="HS256", env="ALGORITHM")
     access_token_expire_minutes: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
+    ai_jwt_secret_key: str = Field(default="ai_orchestrator_secret_key_2024", env="AI_JWT_SECRET_KEY")
     
     model_config = {
         "env_file_encoding": "utf-8",
@@ -80,6 +81,21 @@ class CORSSettings(BaseSettings):
     }
 
 
+class AISettings(BaseSettings):
+    """AI Orchestrator configuration."""
+    ai_orchestrator_url: str = Field(default="http://ai-orchestrator:8001", env="AI_ORCHESTRATOR_URL")
+    ai_jwt_secret_key: str = Field(default="ai_orchestrator_secret_key_2024", env="AI_JWT_SECRET_KEY")
+    ai_jwt_algorithm: str = Field(default="HS256", env="AI_JWT_ALGORITHM")
+    ai_jwt_access_token_expire_minutes: int = Field(default=1440, env="AI_JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+    
+    model_config = {
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+        "case_sensitive": False
+    }
+
+
 class Settings:
     """Main settings container."""
     
@@ -91,6 +107,7 @@ class Settings:
         self.app = AppSettings()
         self.security = SecuritySettings()
         self.cors = CORSSettings()
+        self.ai = AISettings()
     
     @property
     def is_development(self) -> bool:
